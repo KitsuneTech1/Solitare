@@ -8,13 +8,13 @@
     :root{
       --bg:#0b6623;
       --card-back:#0c5a3c;
-      --card-width:92px;
-      --card-height:128px;
-      --card-radius:8px;
+      --card-width:70px;
+      --card-height:98px;
+      --card-radius:6px;
       --accent:#f0f0f0;
       --red:#d32f2f;
       --black:#222;
-      --pile-gap:12px;
+      --pile-gap:8px;
     }
     html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--accent);-webkit-font-smoothing:antialiased}
     .app{
@@ -45,7 +45,7 @@
     .pile.empty, .foundation.empty{border:2px dashed rgba(255,255,255,0.06);background:linear-gradient(180deg,#0d702f,#0b5a28)}
     .stack{position:relative;height:calc(var(--card-height) + 10px);width:var(--card-width)}
     .tableau{display:flex;gap:12px}
-    .tableau .column{width:var(--card-width);min-height:300px}
+    .tableau .column{width:var(--card-width);min-height:200px}
     .card{
       width:var(--card-width);height:var(--card-height);
       border-radius:var(--card-radius);box-shadow:0 6px 14px rgba(0,0,0,0.5);
@@ -86,7 +86,7 @@
         <select id="variantSelect" title="Variant">
           <option value="Klondike" selected>Klondike</option>
           <option value="FreeCell">FreeCell (coming)</option>
-          <option value="Spider">Spider (coming)</option>
+          <option value="Spider">Spider</option>
         </select>
         <select id="drawMode" title="Draw mode">
           <option value="1">Draw 1</option>
@@ -142,11 +142,11 @@
         </label>
         <label><input type="checkbox" id="settingSound" /> Enable sound (currently no audio)</label>
         <label>Variant:
-          <select id="settingVariant" style="margin-left:8px">
-            <option value="Klondike">Klondike</option>
-            <option value="FreeCell">FreeCell (coming)</option>
-            <option value="Spider">Spider (coming)</option>
-          </select>
+        <select id="settingVariant" style="margin-left:8px">
+          <option value="Klondike">Klondike</option>
+          <option value="FreeCell">FreeCell (coming)</option>
+          <option value="Spider">Spider</option>
+        </select>
         </label>
       </div>
       <div class="actions" style="margin-top:12px">
@@ -206,7 +206,23 @@
       return deck;
     }
 
-    function initialDeal(drawMode=1){
+    function makeSpiderDeck(){
+      const deck = [];
+      // Spider uses 2 decks (104 cards)
+      for(let i=0;i<2;i++){
+        for(const s of SUITS){
+          for(let r=0;r<RANKS.length;r++){
+            deck.push({suit:s,rank:RANKS[r],value:r+1,color: (s==='♥' || s==='♦') ? 'red' : 'black' });
+          }
+        }
+      }
+      return deck;
+    }
+
+    function initialDeal(drawMode=1, variant='Klondike'){
+      if (variant === 'Spider') {
+        return initialSpiderDeal();
+      }
       const deck = makeDeck();
       util.shuffle(deck);
       const tableau = [];
@@ -234,7 +250,58 @@
         moves:0,
         started:false,
         seconds:0,
-        won:false
+        won:false,
+        variant: variant
+      };
+    }
+
+    function initialSpiderDeal(){
+      const deck = makeSpiderDeck();
+      util.shuffle(deck);
+      const tableau = [[],[],[],[],[],[],[],[]]; // 8 columns for Spider
+      let idx = 0;
+      
+      // Deal Spider layout: 6 cards to first 4 columns, 5 cards to last 4 columns, all face down
+      for(let c=0;c<4;c++){
+        for(let k=0;k<6;k++){
+          const card = deck[idx++];
+          card.faceUp = false;
+          tableau[c].push(card);
+        }
+      }
+      for(let c=4;c<8;c++){
+        for(let k=0;k<5;k++){
+          const card = deck[idx++];
+          card.faceUp = false;
+          tableau[c].push(card);
+        }
+      }
+      
+      // Deal face up cards on top of each column
+      for(let c=0;c<8;c++){
+        const card = deck[idx++];
+        card.faceUp = true;
+        tableau[c].push(card);
+      }
+      
+      // Remaining cards become the stock (face down)
+      const stock = [];
+      for(;idx<deck.length;idx++){
+        const c = deck[idx]; c.faceUp=false; stock.push(c);
+      }
+      
+      return {
+        tableau,
+        foundations:[[],[],[],[],[],[],[],[]], // 8 foundations for Spider
+        stock,
+        waste:[],
+        drawMode: 1, // Spider doesn't use draw mode
+        score:0,
+        moves:0,
+        started:false,
+        seconds:0,
+        won:false,
+        variant: 'Spider'
       };
     }
 
@@ -251,33 +318,97 @@
       return card.value === pile[pile.length-1].value + 1;
     }
 
-    function canMoveToTableau(card, destCol){
+    function canMoveToTableau(card, destCol, variant='Klondike'){
       if(destCol.length===0) return card.value===13; // King
       const top = destCol[destCol.length-1];
-      return (top.color !== card.color) && (top.value === card.value + 1);
+      
+      if (variant === 'Spider') {
+        // Spider: only same suit sequences can be moved together
+        return (top.suit === card.suit) && (top.value === card.value + 1);
+      } else {
+        // Klondike: alternating colors
+        return (top.color !== card.color) && (top.value === card.value + 1);
+      }
     }
 
     function moveFromStock(state){
-      if(state.stock.length===0){
-        while(state.waste.length>0){
-          const c = state.waste.pop(); c.faceUp=false; state.stock.push(c);
+      if (state.variant === 'Spider') {
+        // Spider: deal 10 cards from stock to tableau (distributed across 8 columns)
+        if (state.stock.length === 0) return false;
+        
+        // Deal 10 cards total, one to each column, then remaining 2 to first 2 columns
+        for (let i = 0; i < 10; i++) {
+          if (state.stock.length === 0) break;
+          const card = state.stock.pop();
+          card.faceUp = true;
+          // Distribute across columns: 0-7, then 0-1 again for the extra 2 cards
+          const columnIndex = i < 8 ? i : i - 8;
+          state.tableau[columnIndex].push(card);
         }
         state.moves++;
         return true;
       } else {
-        const n = state.drawMode || 1;
-        for(let i=0;i<n && state.stock.length>0;i++){
-          const c = state.stock.pop();
-          c.faceUp = true;
-          state.waste.push(c);
+        // Klondike: standard stock handling
+        if(state.stock.length===0){
+          while(state.waste.length>0){
+            const c = state.waste.pop(); c.faceUp=false; state.stock.push(c);
+          }
+          state.moves++;
+          return true;
+        } else {
+          const n = state.drawMode || 1;
+          for(let i=0;i<n && state.stock.length>0;i++){
+            const c = state.stock.pop();
+            c.faceUp = true;
+            state.waste.push(c);
+          }
+          state.moves++;
+          return true;
         }
-        state.moves++;
-        return true;
       }
     }
 
     function checkWin(state){
-      return state.foundations.every(f=>f.length===13);
+      if (state.variant === 'Spider') {
+        // Spider: win when all 8 foundations have 13 cards each
+        return state.foundations.every(f=>f.length===13);
+      } else {
+        // Klondike: win when all 4 foundations have 13 cards each
+        return state.foundations.every(f=>f.length===13);
+      }
+    }
+
+    // Spider-specific: check if a complete sequence exists and remove it
+    function checkAndRemoveCompleteSequence(state, colIndex) {
+      if (state.variant !== 'Spider') return false;
+      
+      const col = state.tableau[colIndex];
+      if (col.length < 13) return false;
+      
+      // Check if the last 13 cards form a complete sequence (King to Ace of same suit)
+      const sequence = col.slice(-13);
+      const suit = sequence[0].suit;
+      
+      // Verify it's a complete sequence in descending order
+      for (let i = 0; i < 13; i++) {
+        if (sequence[i].suit !== suit || sequence[i].value !== 13 - i) {
+          return false;
+        }
+      }
+      
+      // Remove the complete sequence and add to score
+      state.tableau[colIndex] = col.slice(0, -13);
+      state.score += 100; // Bonus for completing a sequence
+      
+      // Flip the next card if available
+      if (state.tableau[colIndex].length > 0) {
+        const topCard = state.tableau[colIndex][state.tableau[colIndex].length - 1];
+        if (!topCard.faceUp) {
+          topCard.faceUp = true;
+        }
+      }
+      
+      return true;
     }
 
     return {
@@ -331,6 +462,8 @@
     const $settingDefaultDraw = document.getElementById('settingDefaultDraw');
     const $settingSound = document.getElementById('settingSound');
     const $settingVariant = document.getElementById('settingVariant');
+    const $saveSettingsBtn = document.getElementById('saveSettingsBtn');
+    const $cancelSettingsBtn = document.getElementById('cancelSettingsBtn');
     
     // Settings persisted in localStorage
     const SettingsStorageKey = 'solitaire_settings_v1';
@@ -348,7 +481,11 @@
     let settings = Settings.load();
     // apply default draw mode and variant UI
     if($drawMode) $drawMode.value = settings.defaultDraw || 1;
-    if($variantSelect) $variantSelect.value = settings.variant || 'Klondike';
+    // Always reset variant dropdown to Klondike on page load/refresh
+    if($variantSelect) $variantSelect.value = 'Klondike';
+    // Update settings to match the UI
+    settings.variant = 'Klondike';
+    Settings.save(settings);
     
     function openSettingsModal(){
       // populate current settings into controls
@@ -375,10 +512,11 @@
       closeSettingsModal();
     });
     
-    // variant select should update settings.variant
+    // variant select should update settings.variant and start new game immediately
     $variantSelect && $variantSelect.addEventListener('change', (e)=>{
       settings.variant = $variantSelect.value;
       Settings.save(settings);
+      newGame(); // Start new game immediately when variant changes
     });
     
     let state = Game.initialDeal(settings.defaultDraw || 1);
@@ -405,7 +543,8 @@
 
     function newGame(){
       Undo.clear();
-      state = Game.initialDeal(parseInt($drawMode.value,10));
+      const variant = $variantSelect.value;
+      state = Game.initialDeal(parseInt($drawMode.value,10), variant);
       state.started=false; state.won=false; state.score=0; state.moves=0; state.seconds=0;
       renderAll();
       selected = null;
@@ -441,16 +580,19 @@
 
     // return true if any legal move exists from the current state
     function hasAnyLegalMoves(){
-      // waste -> foundation / tableau
-      if(state.waste.length>0){
+      const numColumns = state.variant === 'Spider' ? 8 : 7;
+      
+      // waste -> foundation / tableau (only for Klondike)
+      if(state.variant !== 'Spider' && state.waste.length>0){
         const w = state.waste[state.waste.length-1];
         if(Game.canMoveToFoundation(w, state.foundations)) return true;
-        for(let c=0;c<7;c++){
-          if(Game.canMoveToTableau(w, state.tableau[c])) return true;
+        for(let c=0;c<numColumns;c++){
+          if(Game.canMoveToTableau(w, state.tableau[c], state.variant)) return true;
         }
       }
+      
       // tableau -> foundation / tableau
-      for(let c=0;c<7;c++){
+      for(let c=0;c<numColumns;c++){
         const col = state.tableau[c];
         for(let i=0;i<col.length;i++){
           const card = col[i];
@@ -458,31 +600,21 @@
           // single-card to foundation (only top card matters for foundation)
           if(i === col.length - 1 && Game.canMoveToFoundation(card, state.foundations)) return true;
           // try moving this face-up card (and stack beneath it) to other tableau columns
-          for(let d=0;d<7;d++){
+          for(let d=0;d<numColumns;d++){
             if(d===c) continue;
-            if(Game.canMoveToTableau(card, state.tableau[d])) return true;
+            if(Game.canMoveToTableau(card, state.tableau[d], state.variant)) return true;
           }
         }
       }
+      
+      // For Spider, check if we can deal from stock
+      if (state.variant === 'Spider' && state.stock.length > 0) {
+        return true;
+      }
+      
       return false;
     }
 
-    function checkForLoss(){
-      if(state.won) return;
-      // if there are any legal moves, not a loss
-      if(hasAnyLegalMoves()) return;
-      // allow a chance to draw from stock if available
-      if(state.stock.length>0) return;
-      // No stock and no legal moves -> player loses
-      const html = '<div>No legal moves remain. You cannot move any cards through the deck.</div>' +
-        '<div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">' +
-        '<button id="loseNewGame">New Game</button>' +
-        '<button id="loseDismiss">Dismiss</button>' +
-        '</div>';
-      openModal('No moves left', html, false);
-      document.getElementById('loseNewGame').addEventListener('click', ()=>{ closeModal(); newGame(); });
-      document.getElementById('loseDismiss').addEventListener('click', ()=>{ closeModal(); });
-    }
 
     function clearChildren(node){ while(node.firstChild) node.removeChild(node.firstChild) }
 
@@ -516,14 +648,16 @@
       // Click handler (select / auto-move)
       el.addEventListener('click', (ev)=>{
         ev.stopPropagation();
+        console.log('Click detected on card:', card.rank, card.suit);
         if(!card.faceUp) return;
 
         // Helper: attempt to move a single card (or stack) to any tableau column (left-to-right)
         function tryMoveToAnyTableau(singleCard, origin){
-          for(let d=0; d<7; d++){
+          const numColumns = state.variant === 'Spider' ? 8 : 7;
+          for(let d=0; d<numColumns; d++){
             // skip moving to same column
             if(origin && origin.type === 'tableau' && origin.col === d) continue;
-            if(Game.canMoveToTableau(singleCard, state.tableau[d])){
+            if(Game.canMoveToTableau(singleCard, state.tableau[d], state.variant)){
               // perform move
               if(origin.type === 'waste'){
                 const c = state.waste.pop();
@@ -538,7 +672,6 @@
               checkForFlip(origin);
               renderAll();
               finishIfWon();
-              checkForLoss();
               return true;
             }
           }
@@ -555,7 +688,7 @@
             state.foundations[idx].push(card);
             state.moves++; state.score += 10;
             if(!state.started){ state.started=true; startTimer() }
-            renderAll(); finishIfWon(); checkForLoss(); return;
+            renderAll(); finishIfWon(); return;
           }
           // try moving automatically to a tableau column
           if(tryMoveToAnyTableau(card, from)) return;
@@ -581,7 +714,7 @@
             state.moves++; state.score += 10;
             if(!state.started){ state.started=true; startTimer() }
             checkForFlip({type:'tableau',col,index});
-            renderAll(); finishIfWon(); checkForLoss(); return;
+            renderAll(); finishIfWon(); return;
           }
 
           // try auto-move the stack (or single card) to any valid tableau destination
@@ -601,48 +734,160 @@
       // Pointer events for drag-and-drop (only for face-up)
       el.addEventListener('pointerdown', (ev)=>{
         if(!card.faceUp) return;
+        // Only start drag if it's a deliberate drag (not just a click)
+        const startX = ev.clientX;
+        const startY = ev.clientY;
+        let isDragging = false;
+        
+        const onPointerMove = (moveEv) => {
+          const dx = Math.abs(moveEv.clientX - startX);
+          const dy = Math.abs(moveEv.clientY - startY);
+          
+          // Only start drag if movement exceeds threshold (5px)
+          if (!isDragging && (dx > 5 || dy > 5)) {
+            isDragging = true;
+            ev.preventDefault();
+            ev.stopPropagation();
+            
+            // record drag origin and cards to move
+            let origin;
+            let movingCards = [];
+            if(opts.location === 'waste'){
+              origin = {type:'waste',index:state.waste.length-1};
+              movingCards = [ state.waste[state.waste.length-1] ];
+            } else if(opts.location === 'tableau'){
+              origin = {type:'tableau',col:opts.col,index:opts.index};
+              movingCards = state.tableau[opts.col].slice(opts.index);
+            } else {
+              return; // don't drag from foundations
+            }
+
+            // create ghost (show proper suit and color, and count if moving multiple cards)
+            const ghost = document.createElement('div');
+            ghost.className = 'card ghost';
+            // render a compact visual of the moving stack (show top card suit with color)
+            const topCard = movingCards[0];
+            const suitHtml = `<span class="suit" style="font-size:20px;${topCard.color === 'red' ? 'color:var(--red);' : 'color:var(--black);'}">${topCard.suit}</span>`;
+            let countHtml = '';
+            if(movingCards.length > 1){
+              countHtml = `<div style="font-size:12px;opacity:0.9;margin-top:4px">+${movingCards.length - 1} cards</div>`;
+            }
+            ghost.innerHTML = `<div style="padding:8px;font-weight:800;font-size:16px;text-align:center">${topCard.rank} ${suitHtml}${countHtml}</div>`;
+            document.body.appendChild(ghost);
+
+            dragState = {
+              origin,
+              movingCards,
+              ghostEl: ghost,
+              pointerId: ev.pointerId
+            };
+            // initial position
+            moveGhost(moveEv.clientX, moveEv.clientY);
+
+            // capture pointer on the element so we receive move/up events
+            (ev.target).setPointerCapture(ev.pointerId);
+
+            // snapshot before actual move for undo (we'll only commit if move occurs)
+            pushUndo();
+          }
+          
+          if (isDragging && dragState) {
+            moveGhost(moveEv.clientX, moveEv.clientY);
+          }
+        };
+
+        const onPointerUp = (upEv) => {
+          window.removeEventListener('pointermove', onPointerMove);
+          window.removeEventListener('pointerup', onPointerUp);
+          
+          if (isDragging && dragState) {
+            // finalize drop attempt
+            const success = performDropAt(upEv.clientX, upEv.clientY);
+            // remove ghost
+            if(dragState.ghostEl && dragState.ghostEl.parentNode) dragState.ghostEl.parentNode.removeChild(dragState.ghostEl);
+            dragState = null;
+            clearDropHighlights();
+            renderAll();
+            if(success) finishIfWon();
+          }
+        };
+
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', onPointerUp);
+      });
+
+      // Double-click handler for auto-move to foundation first, then tableau
+      el.addEventListener('dblclick', (ev)=>{
         ev.preventDefault();
         ev.stopPropagation();
-        // record drag origin and cards to move
+        console.log('Double-click detected on card:', card.rank, card.suit);
+        if(!card.faceUp) return;
+
+        // Helper: attempt to move a single card (or stack) to any tableau column (left-to-right)
+        function tryMoveToAnyTableau(singleCard, origin){
+          const numColumns = state.variant === 'Spider' ? 8 : 7;
+          for(let d=0; d<numColumns; d++){
+            // skip moving to same column
+            if(origin && origin.type === 'tableau' && origin.col === d) continue;
+            if(Game.canMoveToTableau(singleCard, state.tableau[d], state.variant)){
+              // perform move
+              if(origin.type === 'waste'){
+                const c = state.waste.pop();
+                state.tableau[d].push(c);
+              } else if(origin.type === 'tableau'){
+                const moving = state.tableau[origin.col].slice(origin.index);
+                state.tableau[origin.col].splice(origin.index);
+                state.tableau[d].push(...moving);
+              }
+              state.moves++; state.score += 5;
+              if(!state.started){ state.started=true; startTimer() }
+              checkForFlip(origin);
+              renderAll();
+              finishIfWon();
+              return true;
+            }
+          }
+          return false;
+        }
+
+        // Determine origin based on card location
         let origin;
-        let movingCards = [];
-        if(opts.location === 'waste'){
+        if(el.dataset.location === 'waste'){
           origin = {type:'waste',index:state.waste.length-1};
-          movingCards = [ state.waste[state.waste.length-1] ];
-        } else if(opts.location === 'tableau'){
-          origin = {type:'tableau',col:opts.col,index:opts.index};
-          movingCards = state.tableau[opts.col].slice(opts.index);
+        } else if(el.dataset.location === 'tableau'){
+          const col = parseInt(el.dataset.col,10);
+          const index = parseInt(el.dataset.index,10);
+          origin = {type:'tableau',col,index};
         } else {
-          return; // don't drag from foundations
+          return; // don't double-click from foundations
         }
 
-        // create ghost (show proper suit and color, and count if moving multiple cards)
-        const ghost = document.createElement('div');
-        ghost.className = 'card ghost';
-        // render a compact visual of the moving stack (show top card suit with color)
-        const topCard = movingCards[0];
-        const suitHtml = `<span class="suit" style="font-size:20px;${topCard.color === 'red' ? 'color:var(--red);' : 'color:var(--black);'}">${topCard.suit}</span>`;
-        let countHtml = '';
-        if(movingCards.length > 1){
-          countHtml = `<div style="font-size:12px;opacity:0.9;margin-top:4px">+${movingCards.length - 1} cards</div>`;
-        }
-        ghost.innerHTML = `<div style="padding:8px;font-weight:800;font-size:16px;text-align:center">${topCard.rank} ${suitHtml}${countHtml}</div>`;
-        document.body.appendChild(ghost);
-
-        dragState = {
-          origin,
-          movingCards,
-          ghostEl: ghost,
-          pointerId: ev.pointerId
-        };
-        // initial position
-        moveGhost(ev.clientX, ev.clientY);
-
-        // capture pointer on the element so we receive move/up events
-        (ev.target).setPointerCapture(ev.pointerId);
-
-        // snapshot before actual move for undo (we'll only commit if move occurs)
         pushUndo();
+
+        // Try foundation first
+        if(Game.canMoveToFoundation(card, state.foundations)){
+          const idx = ['♠','♥','♦','♣'].indexOf(card.suit);
+          if(origin.type === 'waste'){
+            state.waste.pop();
+          } else if(origin.type === 'tableau'){
+            state.tableau[origin.col].splice(origin.index);
+          }
+          state.foundations[idx].push(card);
+          state.moves++; state.score += 10;
+          if(!state.started){ state.started=true; startTimer() }
+          checkForFlip(origin);
+          renderAll();
+          finishIfWon();
+          return;
+        }
+
+        // If foundation move not possible, try tableau columns left to right
+        if(tryMoveToAnyTableau(card, origin)){
+          return;
+        }
+
+        // If no valid move found, just render to clear any selection
+        renderAll();
       });
 
       return el;
@@ -697,7 +942,7 @@
         const destIndex = Array.from($tableau.children).indexOf(columnEl);
         if(destIndex < 0) return false;
         // can move if topCard can be placed onto dest column
-        if(Game.canMoveToTableau(topCard, state.tableau[destIndex])){
+        if(Game.canMoveToTableau(topCard, state.tableau[destIndex], state.variant)){
           // perform move
           if(dragState.origin.type === 'waste'){
             const c = state.waste.pop();
@@ -751,6 +996,9 @@
       $moves.textContent = state.moves;
       $timer.textContent = util.fmtTime(state.seconds);
 
+      // Update title based on variant
+      document.querySelector('h1').textContent = state.variant === 'Spider' ? 'Spider Solitaire' : 'Klondike Solitaire';
+
       // foundations - recreate nodes (show suit marker on empty slots)
       clearChildren($foundations);
       for(let i=0;i<4;i++){
@@ -781,7 +1029,7 @@
         $foundations.appendChild(f);
       }
 
-      // stock
+      // stock - hide/show based on variant
       clearChildren($stock);
       const stockPile = document.createElement('div');
       stockPile.className='stack';
@@ -792,6 +1040,24 @@
         stockPile.appendChild(back);
       }
       $stock.appendChild(stockPile);
+      
+      // Show/hide stock and waste based on variant
+      if (state.variant === 'Spider') {
+        $waste.style.display = 'none';
+        // For Spider, show stock but make it look like a deck
+        $stock.style.display = '';
+        // Add a visual indicator that this is the stock/deck
+        if (state.stock.length > 0) {
+          const stockEl = $stock.querySelector('.stack');
+          if (stockEl) {
+            stockEl.style.cursor = 'pointer';
+            stockEl.title = 'Click to deal 10 cards (one to each column)';
+          }
+        }
+      } else {
+        $stock.style.display = '';
+        $waste.style.display = '';
+      }
 
       // waste
       clearChildren($waste);
@@ -804,11 +1070,13 @@
         const empty = document.createElement('div'); empty.className='pile empty'; $waste.appendChild(empty);
       }
 
-      // tableau
+      // tableau - dynamic number of columns based on variant
       clearChildren($tableau);
-      for(let c=0;c<7;c++){
+      const numColumns = state.variant === 'Spider' ? 8 : 7;
+      
+      for(let c=0;c<numColumns;c++){
         const col = document.createElement('div'); col.className='column';
-        const colStack = state.tableau[c];
+        const colStack = state.tableau[c] || [];
         const container = document.createElement('div'); container.style.position='relative'; container.style.minHeight='260px';
         if(colStack.length===0){
           const empty = document.createElement('div'); empty.className='pile empty'; empty.style.height = '120px';
@@ -848,14 +1116,13 @@
       Game.moveFromStock(state);
       renderAll();
       // after drawing, check if there are any legal moves left; if stock is empty and none, show loss
-      checkForLoss();
     }
 
     function onColumnClicked(destCol){
       if(!selected) return;
       if(selected.type==='waste'){
         const card = state.waste[state.waste.length-1];
-        if(Game.canMoveToTableau(card, state.tableau[destCol])){
+        if(Game.canMoveToTableau(card, state.tableau[destCol], state.variant)){
           pushUndo();
           const moving = state.waste.pop();
           state.tableau[destCol].push(moving);
@@ -871,7 +1138,7 @@
         const colArr = state.tableau[selected.col];
         const movingStack = colArr.slice(selected.index);
         const topCard = movingStack[0];
-        if(Game.canMoveToTableau(topCard, state.tableau[destCol])){
+        if(Game.canMoveToTableau(topCard, state.tableau[destCol], state.variant)){
           pushUndo();
           state.tableau[selected.col].splice(selected.index);
           state.tableau[destCol].push(...movingStack);
@@ -1031,7 +1298,6 @@
       renderAll();
       if(success) finishIfWon();
       // if no success, or even after successful move, verify loss condition (safe-guard)
-      checkForLoss();
     });
 
     // initial render and attach foundation/tableau slots
@@ -1041,6 +1307,7 @@
         f.className = 'foundation empty'; f.dataset.foundationIndex = i;
         $foundations.appendChild(f);
       }
+      // Initialize tableau with 7 columns (will be updated based on variant in renderAll)
       for(let i=0;i<7;i++){
         const col = document.createElement('div'); col.className='column';
         $tableau.appendChild(col);
