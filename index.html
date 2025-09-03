@@ -83,12 +83,18 @@
         <div class="status">Time: <span id="timer">00:00</span></div>
       </div>
       <div class="controls">
+        <select id="variantSelect" title="Variant">
+          <option value="Klondike" selected>Klondike</option>
+          <option value="FreeCell">FreeCell (coming)</option>
+          <option value="Spider">Spider (coming)</option>
+        </select>
         <select id="drawMode" title="Draw mode">
           <option value="1">Draw 1</option>
           <option value="3">Draw 3</option>
         </select>
         <button id="newGameBtn">New Game</button>
         <button id="undoBtn">Undo</button>
+        <button id="settingsBtn" title="Settings">Settings</button>
         <button id="highscoresBtn">High Scores</button>
       </div>
     </header>
@@ -117,6 +123,35 @@
       <div id="modalBody"></div>
       <div class="actions">
         <button id="modalClose">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div class="modal-backdrop" id="settingsBackdrop" style="display:none;align-items:center;justify-content:center;">
+    <div class="modal" id="settingsModal">
+      <h2>Settings</h2>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <label><input type="checkbox" id="settingUndoPenalty" /> Enable undo penalty</label>
+        <label>Undo penalty amount: <input id="settingUndoAmount" type="number" min="0" value="0" style="width:90px;margin-left:8px" /></label>
+        <label>Default draw mode:
+          <select id="settingDefaultDraw" style="margin-left:8px">
+            <option value="1">Draw 1</option>
+            <option value="3">Draw 3</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="settingSound" /> Enable sound (currently no audio)</label>
+        <label>Variant:
+          <select id="settingVariant" style="margin-left:8px">
+            <option value="Klondike">Klondike</option>
+            <option value="FreeCell">FreeCell (coming)</option>
+            <option value="Spider">Spider (coming)</option>
+          </select>
+        </label>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <button id="saveSettingsBtn">Save</button>
+        <button id="cancelSettingsBtn">Cancel</button>
       </div>
     </div>
   </div>
@@ -287,8 +322,66 @@
     const $modalTitle = document.getElementById('modalTitle');
     const $modalBody = document.getElementById('modalBody');
     const $modalClose = document.getElementById('modalClose');
-
-    let state = Game.initialDeal(1);
+    const $variantSelect = document.getElementById('variantSelect');
+    const $settingsBtn = document.getElementById('settingsBtn');
+    const $settingsBackdrop = document.getElementById('settingsBackdrop');
+    const $settingsModal = document.getElementById('settingsModal');
+    const $settingUndoPenalty = document.getElementById('settingUndoPenalty');
+    const $settingUndoAmount = document.getElementById('settingUndoAmount');
+    const $settingDefaultDraw = document.getElementById('settingDefaultDraw');
+    const $settingSound = document.getElementById('settingSound');
+    const $settingVariant = document.getElementById('settingVariant');
+    
+    // Settings persisted in localStorage
+    const SettingsStorageKey = 'solitaire_settings_v1';
+    const Settings = (function(){
+      const defaults = { undoPenalty:false, penaltyAmount:0, defaultDraw:1, sound:false, variant:'Klondike' };
+      function load(){
+        try{
+          const s = JSON.parse(localStorage.getItem(SettingsStorageKey)||'null');
+          return Object.assign({}, defaults, s||{});
+        }catch(e){ return Object.assign({}, defaults); }
+      }
+      function save(obj){ localStorage.setItem(SettingsStorageKey, JSON.stringify(obj)); }
+      return { load, save, defaults };
+    })();
+    let settings = Settings.load();
+    // apply default draw mode and variant UI
+    if($drawMode) $drawMode.value = settings.defaultDraw || 1;
+    if($variantSelect) $variantSelect.value = settings.variant || 'Klondike';
+    
+    function openSettingsModal(){
+      // populate current settings into controls
+      $settingUndoPenalty.checked = !!settings.undoPenalty;
+      $settingUndoAmount.value = settings.penaltyAmount || 0;
+      $settingDefaultDraw.value = settings.defaultDraw || 1;
+      $settingSound.checked = !!settings.sound;
+      $settingVariant.value = settings.variant || 'Klondike';
+      $settingsBackdrop.style.display = 'flex';
+    }
+    function closeSettingsModal(){ $settingsBackdrop.style.display = 'none'; }
+    $settingsBtn && $settingsBtn.addEventListener('click', ()=> openSettingsModal());
+    $cancelSettingsBtn && $cancelSettingsBtn.addEventListener('click', ()=> closeSettingsModal());
+    $saveSettingsBtn && $saveSettingsBtn.addEventListener('click', ()=>{
+      settings.undoPenalty = !!$settingUndoPenalty.checked;
+      settings.penaltyAmount = Math.max(0, parseInt($settingUndoAmount.value||0,10));
+      settings.defaultDraw = parseInt($settingDefaultDraw.value||1,10);
+      settings.sound = !!$settingSound.checked;
+      settings.variant = $settingVariant.value || 'Klondike';
+      Settings.save(settings);
+      // apply some immediate effects
+      if($drawMode) $drawMode.value = settings.defaultDraw;
+      if($variantSelect) $variantSelect.value = settings.variant;
+      closeSettingsModal();
+    });
+    
+    // variant select should update settings.variant
+    $variantSelect && $variantSelect.addEventListener('change', (e)=>{
+      settings.variant = $variantSelect.value;
+      Settings.save(settings);
+    });
+    
+    let state = Game.initialDeal(settings.defaultDraw || 1);
     let timerInterval = null;
     let selected = null; // selection for click moves
     let dragState = null; // {origin:{type,col,index}, movingCards:[], ghostEl, pointerId}
@@ -848,6 +941,11 @@
         state.seconds = snap.seconds;
         state.drawMode = snap.drawMode;
         state.started = snap.started;
+        // apply undo penalty if enabled
+        if(settings && settings.undoPenalty){
+          const amount = Number(settings.penaltyAmount || 0);
+          state.score = Math.max(0, (state.score || 0) - amount);
+        }
         if(state.started && !timerInterval) startTimer();
         renderAll();
       });
